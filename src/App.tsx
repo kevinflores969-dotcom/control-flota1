@@ -87,17 +87,29 @@ export function App() {
 
   // 🔥 ESCUCHAR CAMBIOS EN TIEMPO REAL DESDE LA NUBE
   useEffect(() => {
-    const unsubFlota = onSnapshot(collection(db, 'flota'), (snapshot) => {
-      const lista: ItemFlota[] = [];
-      snapshot.forEach((doc) => lista.push({ id: doc.id, ...doc.data() } as ItemFlota));
-      setItems(lista);
-    });
+    const unsubFlota = onSnapshot(
+      collection(db, 'flota'),
+      (snapshot) => {
+        const lista: ItemFlota[] = [];
+        snapshot.forEach((doc) => lista.push({ id: doc.id, ...doc.data() } as ItemFlota));
+        setItems(lista);
+      },
+      (error) => {
+        console.error('Error al escuchar colección flota:', error);
+      }
+    );
 
-    const unsubConductores = onSnapshot(collection(db, 'conductores'), (snapshot) => {
-      const lista: Conductor[] = [];
-      snapshot.forEach((doc) => lista.push({ id: doc.id, ...doc.data() } as Conductor));
-      setConductores(lista);
-    });
+    const unsubConductores = onSnapshot(
+      collection(db, 'conductores'),
+      (snapshot) => {
+        const lista: Conductor[] = [];
+        snapshot.forEach((doc) => lista.push({ id: doc.id, ...doc.data() } as Conductor));
+        setConductores(lista);
+      },
+      (error) => {
+        console.error('Error al escuchar colección conductores:', error);
+      }
+    );
 
     return () => {
       unsubFlota();
@@ -139,28 +151,38 @@ export function App() {
       return;
     }
 
-    const idCustom = `C-${Date.now()}`;
-    await setDoc(doc(db, 'conductores', idCustom), {
-      nombre: nuevoNombre.toUpperCase(),
-      rango: nuevoRango,
-      cedula: nuevaCedula,
-      telefono: nuevoTelefono,
-    });
+    try {
+      const idCustom = `C-${Date.now()}`;
+      await setDoc(doc(db, 'conductores', idCustom), {
+        nombre: nuevoNombre.toUpperCase(),
+        rango: nuevoRango,
+        cedula: nuevaCedula,
+        telefono: nuevoTelefono,
+      });
 
-    setNuevoNombre('');
-    setNuevaCedula('');
-    setNuevoTelefono('');
-    mostrarNotificacion(`✅ Conductor guardado permanentemente en la nube.`);
+      setNuevoNombre('');
+      setNuevaCedula('');
+      setNuevoTelefono('');
+      mostrarNotificacion(`✅ Conductor guardado permanentemente en la nube.`);
+    } catch (err) {
+      console.error('Error guardando conductor:', err);
+      mostrarNotificacion('❌ Error al guardar en Firebase.');
+    }
   };
 
   const handleEliminarConductor = async (id: string, nombre: string) => {
     if (window.confirm(`¿Está seguro de eliminar al conductor ${nombre}?`)) {
-      await deleteDoc(doc(db, 'conductores', id));
-      mostrarNotificacion(`🗑️ Conductor ${nombre} eliminado.`);
+      try {
+        await deleteDoc(doc(db, 'conductores', id));
+        mostrarNotificacion(`🗑️ Conductor ${nombre} eliminado.`);
+      } catch (err) {
+        console.error('Error eliminando conductor:', err);
+        mostrarNotificacion('❌ No se pudo eliminar de la base de datos.');
+      }
     }
   };
 
-  // CARGA EXCEL A LA NUBE
+  // 📂 CARGA EXCEL A LA NUBE (MEJORADA Y ULTRA COMPATIBLE)
   const handleCargarExcel = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -171,18 +193,44 @@ export function App() {
         const data = new Uint8Array(e.target?.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: 'array' });
 
-        const sheetVeh = workbook.Sheets['VEHICULOS'];
+        // Búsqueda flexible de hojas por nombre
+        const sheetVehName = workbook.SheetNames.find(
+          (name) =>
+            name.trim().toUpperCase() === 'VEHICULOS' ||
+            name.trim().toUpperCase() === 'VEHÍCULOS' ||
+            name.trim().toUpperCase() === 'VEHICULO'
+        );
+
+        const sheetMotoName = workbook.SheetNames.find(
+          (name) =>
+            name.trim().toUpperCase() === 'MOTOCICLETAS' ||
+            name.trim().toUpperCase() === 'MOTOS' ||
+            name.trim().toUpperCase() === 'MOTOCICLETA'
+        );
+
+        // Si no encuentra los nombres exactos, usa la primera y segunda hoja si existen
+        const sheetVeh = sheetVehName
+          ? workbook.Sheets[sheetVehName]
+          : workbook.Sheets[workbook.SheetNames[0]];
+
+        const sheetMoto = sheetMotoName
+          ? workbook.Sheets[sheetMotoName]
+          : workbook.Sheets[workbook.SheetNames[1]];
+
+        let cargadosCount = 0;
+
+        // PROCESAR VEHÍCULOS
         if (sheetVeh) {
           const rawVeh: any[] = XLSX.utils.sheet_to_json(sheetVeh, { defval: '' });
           for (let idx = 0; idx < rawVeh.length; idx++) {
             const row = rawVeh[idx];
-            const placa = row['PLACA'] || row['PLACA '] || row['Placa'];
+            const placa = row['PLACA'] || row['PLACA '] || row['Placa'] || row['placa'];
             const marca = row['MARCA'] || row['MARCA '] || row['Marca'] || '';
             const modelo = row['MODELO'] || row['MODELO '] || row['Modelo'] || '';
 
             if (placa || marca) {
-              const asignado = row['ASIGANDO A'] || row['ASIGNADO A'] || row['CIRCUTIO'] || 'ESTADIO';
-              const km = row['km actual '] || row['km actual'] || row['KM CAMBIO DE ACEITE'] || 0;
+              const asignado = row['ASIGANDO A'] || row['ASIGNADO A'] || row['CIRCUTIO'] || row['CIRCUITO'] || 'ESTADIO';
+              const km = row['km actual '] || row['km actual'] || row['KM CAMBIO DE ACEITE'] || row['KILOMETRAJE'] || 0;
               const idCustom = `V-${Date.now()}-${idx}`;
 
               await setDoc(doc(db, 'flota', idCustom), {
@@ -196,22 +244,23 @@ export function App() {
                 estado: String(row['MANTENIMIENTO'] || row['OBSERVACIÓN'] || 'ACTIVO').trim(),
                 novedad: String(row['NOVEDAD'] || '').trim(),
               });
+              cargadosCount++;
             }
           }
         }
 
-        const sheetMoto = workbook.Sheets['MOTOCICLETAS'];
+        // PROCESAR MOTOCICLETAS
         if (sheetMoto) {
           const rawMoto: any[] = XLSX.utils.sheet_to_json(sheetMoto, { defval: '' });
           for (let idx = 0; idx < rawMoto.length; idx++) {
             const row = rawMoto[idx];
-            const placa = row['PLACA'] || row['PLACA '] || row['Placa'];
+            const placa = row['PLACA'] || row['PLACA '] || row['Placa'] || row['placa'];
             const marca = row['MARCA'] || row['MARCA '] || row['Marca'] || '';
             const modelo = row['MODELO'] || row['MODELO '] || row['Modelo'] || '';
 
             if (placa || marca) {
               const custodio = row['CUSTODIOS'] || row['Custodios'] || row['CUSTODIO'] || 'DISPONIBLE / SIN CONDUCTOR';
-              const km = row['km actual '] || row['km actual'] || row['KM CAMBIO DE ACEITE'] || 0;
+              const km = row['km actual '] || row['km actual'] || row['KM CAMBIO DE ACEITE'] || row['KILOMETRAJE'] || 0;
               const idCustom = `M-${Date.now()}-${idx}`;
 
               await setDoc(doc(db, 'flota', idCustom), {
@@ -225,14 +274,15 @@ export function App() {
                 estado: String(row['CIRCULANDO/\nESTACIONADO'] || row['OBSERVACIÓN'] || 'CIRCULANDO').trim(),
                 novedad: String(row['NOVEDAD'] || '').trim(),
               });
+              cargadosCount++;
             }
           }
         }
 
-        mostrarNotificacion(`📂 Archivo subido a la nube correctamente.`);
+        mostrarNotificacion(`📂 Archivo procesado con éxito. Unidades registradas: ${cargadosCount}`);
       } catch (err) {
-        console.error(err);
-        mostrarNotificacion('❌ Error al procesar el archivo Excel.');
+        console.error('Error crítico al procesar Excel:', err);
+        mostrarNotificacion('❌ Error al procesar el archivo Excel. Verifica los datos.');
       }
     };
     reader.readAsArrayBuffer(file);
@@ -243,23 +293,28 @@ export function App() {
   const handleConfirmarReasignacion = async () => {
     if (!itemAReasignar) return;
 
-    const conductorEncontrado = conductores.find(
-      (c) => String(c.id).trim() === String(conductorSeleccionadoId).trim()
-    );
+    try {
+      const conductorEncontrado = conductores.find(
+        (c) => String(c.id).trim() === String(conductorSeleccionadoId).trim()
+      );
 
-    const nombreNuevoConductor = conductorEncontrado
-      ? `${conductorEncontrado.rango} ${conductorEncontrado.nombre}`
-      : 'DISPONIBLE / SIN CONDUCTOR';
+      const nombreNuevoConductor = conductorEncontrado
+        ? `${conductorEncontrado.rango} ${conductorEncontrado.nombre}`
+        : 'DISPONIBLE / SIN CONDUCTOR';
 
-    await updateDoc(doc(db, 'flota', itemAReasignar.id), {
-      conductorCustodio: nombreNuevoConductor,
-      circuito: itemAReasignar.categoria === 'VEHICULO' ? nuevoCircuitoReasignado : itemAReasignar.circuito,
-    });
+      await updateDoc(doc(db, 'flota', itemAReasignar.id), {
+        conductorCustodio: nombreNuevoConductor,
+        circuito: itemAReasignar.categoria === 'VEHICULO' ? nuevoCircuitoReasignado : itemAReasignar.circuito,
+      });
 
-    generarPDFActa(itemAReasignar, conductorEncontrado, nuevoCircuitoReasignado);
-    setItemAReasignar(null);
-    setConductorSeleccionadoId('');
-    mostrarNotificacion('📄 Reasignado en la nube y Acta en PDF generada.');
+      generarPDFActa(itemAReasignar, conductorEncontrado, nuevoCircuitoReasignado);
+      setItemAReasignar(null);
+      setConductorSeleccionadoId('');
+      mostrarNotificacion('📄 Reasignado en la nube y Acta en PDF generada.');
+    } catch (err) {
+      console.error('Error al reasignar:', err);
+      mostrarNotificacion('❌ Error al guardar la reasignación.');
+    }
   };
 
   const generarPDFActa = (item: ItemFlota, conductor?: Conductor, nuevoCircuito?: string) => {
@@ -328,16 +383,16 @@ export function App() {
   const itemsFiltrados = items.filter((item) => {
     const coincideCategoria = item.categoria === tabActiva;
     const coincideTexto =
-      item.placa.toLowerCase().includes(busqueda.toLowerCase()) ||
-      item.marcaModelo.toLowerCase().includes(busqueda.toLowerCase()) ||
-      item.conductorCustodio.toLowerCase().includes(busqueda.toLowerCase());
+      (item.placa || '').toLowerCase().includes(busqueda.toLowerCase()) ||
+      (item.marcaModelo || '').toLowerCase().includes(busqueda.toLowerCase()) ||
+      (item.conductorCustodio || '').toLowerCase().includes(busqueda.toLowerCase());
 
     const coincideCircuito =
       tabActiva === 'MOTOCICLETA' ||
       filtroCircuito === 'TODOS' ||
-      item.circuito.toUpperCase() === filtroCircuito.toUpperCase();
+      (item.circuito || '').toUpperCase() === filtroCircuito.toUpperCase();
 
-    const esDisponible = item.conductorCustodio.includes('DISPONIBLE');
+    const esDisponible = (item.conductorCustodio || '').includes('DISPONIBLE');
     const coincideEstado =
       filtroEstado === 'TODOS' ||
       (filtroEstado === 'DISPONIBLES' && esDisponible) ||
@@ -542,7 +597,7 @@ export function App() {
                 <tbody>
                   {itemsFiltrados.length > 0 ? (
                     itemsFiltrados.map((item, index) => {
-                      const esDisponible = item.conductorCustodio.includes('DISPONIBLE');
+                      const esDisponible = (item.conductorCustodio || '').includes('DISPONIBLE');
                       return (
                         <tr key={item.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
                           <td style={{ padding: '14px 12px', color: '#94a3b8', fontSize: '13px' }}>{index + 1}</td>
@@ -568,7 +623,7 @@ export function App() {
                             </span>
                           </td>
                           <td style={{ padding: '14px 12px', fontWeight: 'bold', color: '#1e293b' }}>{item.circuito}</td>
-                          <td style={{ padding: '14px 12px', fontWeight: 'bold', color: '#2563eb' }}>{item.kmActual.toLocaleString()} km</td>
+                          <td style={{ padding: '14px 12px', fontWeight: 'bold', color: '#2563eb' }}>{Number(item.kmActual || 0).toLocaleString()} km</td>
                           <td style={{ padding: '14px 12px', textAlign: 'center' }}>
                             <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
                               <button
@@ -891,5 +946,4 @@ export function App() {
   );
 }
 
-// Exportación por defecto para evitar errores
 export default App;
