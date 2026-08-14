@@ -1,15 +1,14 @@
-import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { initializeApp } from 'firebase/app';
+import { getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCXz1A7kXS0Sdgyyn3lmteTwa6HJd4ejCk",
-  authDomain: "flota-policial.firebaseapp.com",
-  projectId: "flota-policial",
-  storageBucket: "flota-policial.firebasestorage.app",
-  messagingSenderId: "402097486106",
-  appId: "1:402097486106:web:21c7e6616a22538deed4a3",
-  measurementId: "G-W9QB0ZGTKW"
+  apiKey: "TU_API_KEY_REAL",
+  authDomain: "TU_PROYECTO.firebaseapp.com",
+  projectId: "TU_PROYECTO",
+  storageBucket: "TU_PROYECTO.appspot.com",
+  messagingSenderId: "TU_SENDER_ID",
+  appId: "TU_APP_ID"
 };
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+const firebaseApp = initializeApp(firebaseConfig);
+export const db = getFirestore(firebaseApp);

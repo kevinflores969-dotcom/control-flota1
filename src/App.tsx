@@ -1,7 +1,15 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { doc, setDoc, onSnapshot } from 'firebase/firestore';
+
+// Importamos la conexión centralizada desde firebaseConfig.ts
+import { db } from './firebaseConfig';
+
+// Todos los datos compartidos (flota, conductores, circuitos, historial) se
+// guardan como documentos dentro de esta colección en Firestore.
+const COLECCION_DATOS = 'flota_datos';
 
 /* ============================================================================
    TIPOS E INTERFACES
@@ -108,7 +116,8 @@ const LS_KEYS = {
 
 /* ============================================================================
    HOOK: useLocalStorage
-   Persiste cualquier estado en localStorage automáticamente.
+   Persiste cualquier estado en localStorage automáticamente. Se usa solo
+   para la sesión de usuario (login), que es local a cada equipo.
    ============================================================================ */
 
 function useLocalStorage<T>(key: string, valorInicial: T): [T, React.Dispatch<React.SetStateAction<T>>] {
@@ -134,8 +143,66 @@ function useLocalStorage<T>(key: string, valorInicial: T): [T, React.Dispatch<Re
 }
 
 /* ============================================================================
+   HOOK: useFirestoreSync
+   Reemplaza a useLocalStorage para los datos que deben compartirse entre
+   todas las computadoras de la oficina.
+   ============================================================================ */
+
+function useFirestoreSync<T>(
+  key: string,
+  valorInicial: T
+): [T, React.Dispatch<React.SetStateAction<T>>, boolean] {
+  const [valor, setValorState] = useState<T>(valorInicial);
+  const [cargando, setCargando] = useState(true);
+  const valorRef = useRef<T>(valorInicial);
+  valorRef.current = valor;
+
+  useEffect(() => {
+    const ref = doc(db, COLECCION_DATOS, key);
+
+    const desuscribir = onSnapshot(
+      ref,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as { valor: T };
+          setValorState(data.valor);
+        } else {
+          setDoc(ref, { valor: valorInicial }).catch((error) => {
+            console.error(`Error creando documento Firestore["${key}"]:`, error);
+          });
+        }
+        setCargando(false);
+      },
+      (error) => {
+        console.error(`Error escuchando Firestore["${key}"]:`, error);
+        setCargando(false);
+      }
+    );
+
+    return () => desuscribir();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  const setValor: React.Dispatch<React.SetStateAction<T>> = (accionOValor) => {
+    const nuevoValor =
+      typeof accionOValor === 'function'
+        ? (accionOValor as (prev: T) => T)(valorRef.current)
+        : accionOValor;
+
+    valorRef.current = nuevoValor;
+    setValorState(nuevoValor);
+
+    const ref = doc(db, COLECCION_DATOS, key);
+    setDoc(ref, { valor: nuevoValor }).catch((error) => {
+      console.error(`Error guardando en Firestore["${key}"]:`, error);
+    });
+  };
+
+  return [valor, setValor, cargando];
+}
+
+/* ============================================================================
    HOOK: useNotificacion
-   Sistema de notificaciones flash reutilizable.
    ============================================================================ */
 
 function useNotificacion() {
@@ -151,11 +218,10 @@ function useNotificacion() {
 
 /* ============================================================================
    HOOK: useConductores
-   Encapsula todo el CRUD de conductores.
    ============================================================================ */
 
 function useConductores(mostrarNotificacion: (msg: string) => void) {
-  const [conductores, setConductores] = useLocalStorage<Conductor[]>(LS_KEYS.conductores, CONDUCTORES_DEFAULT);
+  const [conductores, setConductores] = useFirestoreSync<Conductor[]>(LS_KEYS.conductores, CONDUCTORES_DEFAULT);
   const [busquedaConductor, setBusquedaConductor] = useState('');
 
   const agregarConductor = (datos: Omit<Conductor, 'id'>) => {
@@ -208,13 +274,11 @@ function useConductores(mostrarNotificacion: (msg: string) => void) {
 
 /* ============================================================================
    HOOK: useFlota
-   Encapsula el CRUD de vehículos/motocicletas, la edición de kilometraje
-   con historial de auditoría, filtros y la carga desde Excel.
    ============================================================================ */
 
 function useFlota(mostrarNotificacion: (msg: string) => void, usuario: Usuario | null) {
-  const [items, setItems] = useLocalStorage<ItemFlota[]>(LS_KEYS.items, ITEMS_DEFAULT);
-  const [historialKm, setHistorialKm] = useLocalStorage<HistorialKm[]>(LS_KEYS.historialKm, []);
+  const [items, setItems] = useFirestoreSync<ItemFlota[]>(LS_KEYS.items, ITEMS_DEFAULT);
+  const [historialKm, setHistorialKm] = useFirestoreSync<HistorialKm[]>(LS_KEYS.historialKm, []);
 
   const [tabActiva, setTabActiva] = useState<'VEHICULO' | 'MOTOCICLETA'>('VEHICULO');
   const [busqueda, setBusqueda] = useState('');
@@ -471,7 +535,7 @@ function generarPDFActa(item: ItemFlota, conductor?: Conductor, nuevoCircuito?: 
 }
 
 /* ============================================================================
-   ESTILOS COMPARTIDOS (evita repetir objetos inline)
+   ESTILOS COMPARTIDOS
    ============================================================================ */
 
 const estilos = {
@@ -535,9 +599,6 @@ const estilos = {
 
 /* ============================================================================
    COMPONENTE: LoginGate
-   Control de acceso simple por nombre + rol. No es autenticación real de
-   backend: sirve para diferenciar quién puede editar y dejar rastro en el
-   historial de auditoría.
    ============================================================================ */
 
 function LoginGate({ onIngresar }: { onIngresar: (usuario: Usuario) => void }) {
@@ -764,7 +825,6 @@ function KpiCards({
 
 /* ============================================================================
    COMPONENTE: HistorialModal
-   Muestra el historial de cambios de kilometraje de una unidad.
    ============================================================================ */
 
 function HistorialModal({
@@ -897,7 +957,6 @@ function ReasignarModal({
 
 /* ============================================================================
    COMPONENTE: FilaKilometraje
-   Celda de la tabla con edición inline del kilometraje.
    ============================================================================ */
 
 function FilaKilometraje({
@@ -1334,7 +1393,7 @@ export function App() {
   const [usuario, setUsuario] = useLocalStorage<Usuario | null>(LS_KEYS.usuario, null);
   const { notificacion, mostrarNotificacion } = useNotificacion();
 
-  const [circuitos, setCircuitos] = useLocalStorage<string[]>(LS_KEYS.circuitos, CIRCUITOS_DEFAULT);
+  const [circuitos, setCircuitos, cargandoCircuitos] = useFirestoreSync<string[]>(LS_KEYS.circuitos, CIRCUITOS_DEFAULT);
   const conductoresHook = useConductores(mostrarNotificacion);
   const flota = useFlota(mostrarNotificacion, usuario);
 
@@ -1342,7 +1401,24 @@ export function App() {
   const [itemAReasignar, setItemAReasignar] = useState<ItemFlota | null>(null);
   const [itemHistorial, setItemHistorial] = useState<ItemFlota | null>(null);
 
-  // Si no hay usuario en sesión, mostrar la pantalla de acceso
+  if (cargandoCircuitos) {
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: '#0f172a',
+          color: '#ffffff',
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+        }}
+      >
+        Conectando con la base de datos...
+      </div>
+    );
+  }
+
   if (!usuario) {
     return <LoginGate onIngresar={setUsuario} />;
   }
