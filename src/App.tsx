@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { collection, onSnapshot, doc, setDoc, deleteDoc, updateDoc } from 'firebase/firestore';
+import { db } from './firebaseConfig';
 
 // Interfaz de Conductores
 interface Conductor {
@@ -14,7 +16,7 @@ interface Conductor {
 
 // Interfaz de Vehículos/Motocicletas
 interface ItemFlota {
-  id: string | number;
+  id: string;
   categoria: 'VEHICULO' | 'MOTOCICLETA';
   placa: string;
   marcaModelo: string;
@@ -53,44 +55,15 @@ export function App() {
   ]);
   const [nuevoCircuitoInput, setNuevoCircuitoInput] = useState('');
 
-  // ESTADO DE CONDUCTORES
-  const [conductores, setConductores] = useState<Conductor[]>([
-    { id: 'C-1', nombre: 'EDWARD MARCELO GOMEZ AGUAS', rango: 'Subteniente', cedula: '1723372001', telefono: '0995292738' },
-    { id: 'C-2', nombre: 'EDWIN MAURICIO PEREZ MIRANDA', rango: 'Sargento Segundo', cedula: '1804027001', telefono: '0982514125' },
-    { id: 'C-3', nombre: 'JONATHAN PATRICIO CALUÑA GARCIA', rango: 'Policía', cedula: '0605311008', telefono: '0998307665' },
-  ]);
+  // ESTADOS CONECTADOS A FIREBASE (NUBE)
+  const [conductores, setConductores] = useState<Conductor[]>([]);
+  const [items, setItems] = useState<ItemFlota[]>([]);
 
   const [nuevoNombre, setNuevoNombre] = useState('');
   const [nuevoRango, setNuevoRango] = useState('Policía');
   const [nuevaCedula, setNuevaCedula] = useState('');
   const [nuevoTelefono, setNuevoTelefono] = useState('');
   const [busquedaConductor, setBusquedaConductor] = useState('');
-
-  // ESTADO DE FLOTA
-  const [items, setItems] = useState<ItemFlota[]>([
-    {
-      id: 'V-1',
-      categoria: 'VEHICULO',
-      placa: 'IBE4505',
-      marcaModelo: 'Volkswagen Virtus',
-      tipo: 'Auto',
-      conductorCustodio: 'DISPONIBLE / SIN CONDUCTOR',
-      circuito: 'ESTADIO',
-      kmActual: 18000,
-      estado: 'ACTIVO',
-    },
-    {
-      id: 'V-2',
-      categoria: 'VEHICULO',
-      placa: 'EAU5673',
-      marcaModelo: 'KIA SPORTAGE',
-      tipo: 'Camioneta',
-      conductorCustodio: 'DISPONIBLE / SIN CONDUCTOR',
-      circuito: 'ESTADIO',
-      kmActual: 502002,
-      estado: 'ACTIVO',
-    },
-  ]);
 
   // CONTROLES DE INTERFAZ
   const [moduloActivo, setModuloActivo] = useState<'FLOTA' | 'CONDUCTORES'>('FLOTA');
@@ -111,6 +84,26 @@ export function App() {
     setNotificacion(msg);
     setTimeout(() => setNotificacion(null), 3500);
   };
+
+  // 🔥 ESCUCHAR CAMBIOS EN TIEMPO REAL DESDE LA NUBE
+  useEffect(() => {
+    const unsubFlota = onSnapshot(collection(db, 'flota'), (snapshot) => {
+      const lista: ItemFlota[] = [];
+      snapshot.forEach((doc) => lista.push({ id: doc.id, ...doc.data() } as ItemFlota));
+      setItems(lista);
+    });
+
+    const unsubConductores = onSnapshot(collection(db, 'conductores'), (snapshot) => {
+      const lista: Conductor[] = [];
+      snapshot.forEach((doc) => lista.push({ id: doc.id, ...doc.data() } as Conductor));
+      setConductores(lista);
+    });
+
+    return () => {
+      unsubFlota();
+      unsubConductores();
+    };
+  }, []);
 
   // GESTIÓN DE CIRCUITOS
   const handleAgregarCircuito = (e: React.FormEvent) => {
@@ -138,52 +131,51 @@ export function App() {
     }
   };
 
-  // REGISTRO Y ELIMINACIÓN DE CONDUCTORES
-  const handleGuardarConductor = (e: React.FormEvent) => {
+  // REGISTRO Y ELIMINACIÓN DE CONDUCTORES EN LA NUBE
+  const handleGuardarConductor = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!nuevoNombre || !nuevaCedula) {
       mostrarNotificacion('⚠️ Completa el nombre y la cédula del conductor.');
       return;
     }
 
-    const nuevo: Conductor = {
-      id: `C-${Date.now()}`,
+    const idCustom = `C-${Date.now()}`;
+    await setDoc(doc(db, 'conductores', idCustom), {
       nombre: nuevoNombre.toUpperCase(),
       rango: nuevoRango,
       cedula: nuevaCedula,
       telefono: nuevoTelefono,
-    };
+    });
 
-    setConductores([...conductores, nuevo]);
     setNuevoNombre('');
     setNuevaCedula('');
     setNuevoTelefono('');
-    mostrarNotificacion(`✅ Conductor ${nuevo.rango} ${nuevo.nombre} registrado.`);
+    mostrarNotificacion(`✅ Conductor guardado permanentemente en la nube.`);
   };
 
-  const handleEliminarConductor = (id: string, nombre: string) => {
+  const handleEliminarConductor = async (id: string, nombre: string) => {
     if (window.confirm(`¿Está seguro de eliminar al conductor ${nombre}?`)) {
-      setConductores(conductores.filter((c) => c.id !== id));
+      await deleteDoc(doc(db, 'conductores', id));
       mostrarNotificacion(`🗑️ Conductor ${nombre} eliminado.`);
     }
   };
 
-  // CARGA EXCEL
+  // CARGA EXCEL A LA NUBE
   const handleCargarExcel = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const data = new Uint8Array(e.target?.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: 'array' });
-        const nuevaLista: ItemFlota[] = [];
 
         const sheetVeh = workbook.Sheets['VEHICULOS'];
         if (sheetVeh) {
           const rawVeh: any[] = XLSX.utils.sheet_to_json(sheetVeh, { defval: '' });
-          rawVeh.forEach((row, idx) => {
+          for (let idx = 0; idx < rawVeh.length; idx++) {
+            const row = rawVeh[idx];
             const placa = row['PLACA'] || row['PLACA '] || row['Placa'];
             const marca = row['MARCA'] || row['MARCA '] || row['Marca'] || '';
             const modelo = row['MODELO'] || row['MODELO '] || row['Modelo'] || '';
@@ -191,9 +183,9 @@ export function App() {
             if (placa || marca) {
               const asignado = row['ASIGANDO A'] || row['ASIGNADO A'] || row['CIRCUTIO'] || 'ESTADIO';
               const km = row['km actual '] || row['km actual'] || row['KM CAMBIO DE ACEITE'] || 0;
+              const idCustom = `V-${Date.now()}-${idx}`;
 
-              nuevaLista.push({
-                id: `V-${idx + 1}`,
+              await setDoc(doc(db, 'flota', idCustom), {
                 categoria: 'VEHICULO',
                 placa: String(placa || 'SIN PLACA').trim(),
                 marcaModelo: `${marca} ${modelo}`.trim() || 'VEHÍCULO',
@@ -205,13 +197,14 @@ export function App() {
                 novedad: String(row['NOVEDAD'] || '').trim(),
               });
             }
-          });
+          }
         }
 
         const sheetMoto = workbook.Sheets['MOTOCICLETAS'];
         if (sheetMoto) {
           const rawMoto: any[] = XLSX.utils.sheet_to_json(sheetMoto, { defval: '' });
-          rawMoto.forEach((row, idx) => {
+          for (let idx = 0; idx < rawMoto.length; idx++) {
+            const row = rawMoto[idx];
             const placa = row['PLACA'] || row['PLACA '] || row['Placa'];
             const marca = row['MARCA'] || row['MARCA '] || row['Marca'] || '';
             const modelo = row['MODELO'] || row['MODELO '] || row['Modelo'] || '';
@@ -219,9 +212,9 @@ export function App() {
             if (placa || marca) {
               const custodio = row['CUSTODIOS'] || row['Custodios'] || row['CUSTODIO'] || 'DISPONIBLE / SIN CONDUCTOR';
               const km = row['km actual '] || row['km actual'] || row['KM CAMBIO DE ACEITE'] || 0;
+              const idCustom = `M-${Date.now()}-${idx}`;
 
-              nuevaLista.push({
-                id: `M-${idx + 1}`,
+              await setDoc(doc(db, 'flota', idCustom), {
                 categoria: 'MOTOCICLETA',
                 placa: String(placa || 'SIN PLACA').trim(),
                 marcaModelo: `${marca} ${modelo}`.trim() || 'MOTOCICLETA',
@@ -233,13 +226,10 @@ export function App() {
                 novedad: String(row['NOVEDAD'] || '').trim(),
               });
             }
-          });
+          }
         }
 
-        if (nuevaLista.length > 0) {
-          setItems(nuevaLista);
-          mostrarNotificacion(`📂 Carga exitosa: ${nuevaLista.length} unidades registradas.`);
-        }
+        mostrarNotificacion(`📂 Archivo subido a la nube correctamente.`);
       } catch (err) {
         console.error(err);
         mostrarNotificacion('❌ Error al procesar el archivo Excel.');
@@ -250,7 +240,7 @@ export function App() {
   };
 
   // REASIGNACIÓN Y PDF
-  const handleConfirmarReasignacion = () => {
+  const handleConfirmarReasignacion = async () => {
     if (!itemAReasignar) return;
 
     const conductorEncontrado = conductores.find(
@@ -261,38 +251,31 @@ export function App() {
       ? `${conductorEncontrado.rango} ${conductorEncontrado.nombre}`
       : 'DISPONIBLE / SIN CONDUCTOR';
 
-    setItems((prev) =>
-      prev.map((i) =>
-        i.id === itemAReasignar.id
-          ? {
-              ...i,
-              conductorCustodio: nombreNuevoConductor,
-              circuito: itemAReasignar.categoria === 'VEHICULO' ? nuevoCircuitoReasignado : i.circuito,
-            }
-          : i
-      )
-    );
+    await updateDoc(doc(db, 'flota', itemAReasignar.id), {
+      conductorCustodio: nombreNuevoConductor,
+      circuito: itemAReasignar.categoria === 'VEHICULO' ? nuevoCircuitoReasignado : itemAReasignar.circuito,
+    });
 
     generarPDFActa(itemAReasignar, conductorEncontrado, nuevoCircuitoReasignado);
     setItemAReasignar(null);
     setConductorSeleccionadoId('');
-    mostrarNotificacion('📄 Reasignado y Acta en PDF generada.');
+    mostrarNotificacion('📄 Reasignado en la nube y Acta en PDF generada.');
   };
 
   const generarPDFActa = (item: ItemFlota, conductor?: Conductor, nuevoCircuito?: string) => {
-    const doc = new jsPDF();
-    doc.setFontSize(14);
-    doc.setFont('helvetica', 'bold');
-    doc.text('POLICÍA NACIONAL DEL ECUADOR', 105, 15, { align: 'center' });
-    doc.setFontSize(11);
-    doc.text('DISTRITO CIUDAD BLANCA - LOGÍSTICA', 105, 22, { align: 'center' });
-    doc.text('ACTA DE ENTREGA - RECEPCIÓN Y REASIGNACIÓN', 105, 29, { align: 'center' });
+    const docPdf = new jsPDF();
+    docPdf.setFontSize(14);
+    docPdf.setFont('helvetica', 'bold');
+    docPdf.text('POLICÍA NACIONAL DEL ECUADOR', 105, 15, { align: 'center' });
+    docPdf.setFontSize(11);
+    docPdf.text('DISTRITO CIUDAD BLANCA - LOGÍSTICA', 105, 22, { align: 'center' });
+    docPdf.text('ACTA DE ENTREGA - RECEPCIÓN Y REASIGNACIÓN', 105, 29, { align: 'center' });
 
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'normal');
-    doc.text(`Fecha: ${new Date().toLocaleDateString('es-EC')} ${new Date().toLocaleTimeString('es-EC')}`, 14, 38);
+    docPdf.setFontSize(10);
+    docPdf.setFont('helvetica', 'normal');
+    docPdf.text(`Fecha: ${new Date().toLocaleDateString('es-EC')} ${new Date().toLocaleTimeString('es-EC')}`, 14, 38);
 
-    autoTable(doc, {
+    autoTable(docPdf, {
       startY: 42,
       head: [['PARÁMETRO', 'DETALLE DE LA UNIDAD']],
       body: [
@@ -308,8 +291,8 @@ export function App() {
       headStyles: { fillColor: [11, 25, 44] },
     });
 
-    const finalY = (doc as any).lastAutoTable.finalY + 10;
-    autoTable(doc, {
+    const finalY = (docPdf as any).lastAutoTable.finalY + 10;
+    autoTable(docPdf, {
       startY: finalY,
       head: [['PARÁMETRO', 'DATOS DEL NUEVO CUSTODIO / CONDUCTOR']],
       body: [
@@ -322,23 +305,23 @@ export function App() {
       headStyles: { fillColor: [27, 94, 32] },
     });
 
-    const clausulaY = (doc as any).lastAutoTable.finalY + 15;
-    doc.setFontSize(9);
-    doc.text(
+    const clausulaY = (docPdf as any).lastAutoTable.finalY + 15;
+    docPdf.setFontSize(9);
+    docPdf.text(
       'El nuevo custodio declara recibir el bien antes detallado en las condiciones descritas, comprometiéndose\na velar por el buen uso, mantenimiento y conservación del vehículo público asignado.',
       14,
       clausulaY
     );
 
     const firmaY = clausulaY + 35;
-    doc.line(20, firmaY, 80, firmaY);
-    doc.text('ENTREGUE CONFORME\nJefe de Logística / Administrador', 25, firmaY + 5);
+    docPdf.line(20, firmaY, 80, firmaY);
+    docPdf.text('ENTREGUE CONFORME\nJefe de Logística / Administrador', 25, firmaY + 5);
 
-    doc.line(130, firmaY, 190, firmaY);
+    docPdf.line(130, firmaY, 190, firmaY);
     const textoFirma = conductor ? `${conductor.rango} ${conductor.nombre}` : 'Nuevo Custodio';
-    doc.text(`RECIBÍ CONFORME\n${textoFirma}`, 135, firmaY + 5);
+    docPdf.text(`RECIBÍ CONFORME\n${textoFirma}`, 135, firmaY + 5);
 
-    doc.save(`Acta_Reasignacion_${item.placa}.pdf`);
+    docPdf.save(`Acta_Reasignacion_${item.placa}.pdf`);
   };
 
   // FILTRADO DINÁMICO DE FLOTA
@@ -719,75 +702,73 @@ export function App() {
               </form>
             </div>
 
-            {/* GESTIÓN DE CIRCUITOS (EXCLUSIVO VEHÍCULOS) */}
+            {/* GESTIÓN DE CIRCUITOS */}
             <div style={{ backgroundColor: '#ffffff', padding: '20px', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-              <h3 style={{ marginTop: 0, color: '#0f172a', fontSize: '16px' }}>🏢 Circuitos (Exclusivo para Vehículos)</h3>
+              <h3 style={{ marginTop: 0, color: '#0f172a', fontSize: '16px' }}>🏢 Gestión de Circuitos</h3>
               
               <form onSubmit={handleAgregarCircuito} style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
                 <input
                   type="text"
-                  placeholder="Nombre del nuevo circuito..."
+                  placeholder="Nuevo circuito..."
                   value={nuevoCircuitoInput}
                   onChange={(e) => setNuevoCircuitoInput(e.target.value)}
-                  style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', flex: 1 }}
+                  style={{ flex: 1, padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
                 />
                 <button
                   type="submit"
                   style={{
                     backgroundColor: '#2563eb',
-                    color: '#ffffff',
-                    border: 'none',
+                    color: '#fff',
                     padding: '8px 14px',
                     borderRadius: '6px',
+                    border: 'none',
                     fontWeight: 'bold',
                     cursor: 'pointer',
                   }}
                 >
-                  ➕ Crear
+                  Agregar
                 </button>
               </form>
 
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                {circuitos.map((circ) => (
-                  <div
-                    key={circ}
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                {circuitos.map((circuito) => (
+                  <li
+                    key={circuito}
                     style={{
-                      backgroundColor: '#f8fafc',
-                      border: '1px solid #e2e8f0',
-                      borderRadius: '20px',
-                      padding: '6px 12px',
                       display: 'flex',
+                      justifyContent: 'space-between',
                       alignItems: 'center',
-                      gap: '8px',
+                      padding: '8px 12px',
+                      backgroundColor: '#f8fafc',
+                      borderRadius: '6px',
+                      marginBottom: '6px',
+                      fontSize: '13px',
+                      fontWeight: '500',
                     }}
                   >
-                    <span style={{ fontWeight: 'bold', fontSize: '13px', color: '#334155' }}>🏢 {circ}</span>
+                    <span>{circuito}</span>
                     <button
-                      onClick={() => handleEliminarCircuito(circ)}
+                      onClick={() => handleEliminarCircuito(circuito)}
                       style={{
                         backgroundColor: 'transparent',
                         color: '#ef4444',
                         border: 'none',
                         cursor: 'pointer',
                         fontWeight: 'bold',
-                        fontSize: '12px',
-                        padding: 0,
                       }}
-                      title="Eliminar Circuito"
                     >
-                      ✖
+                      ✕
                     </button>
-                  </div>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </div>
-
           </div>
 
           {/* PANEL DERECHO: LISTA DE CONDUCTORES */}
           <div style={{ backgroundColor: '#ffffff', padding: '20px', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
-              <h3 style={{ margin: 0, color: '#0f172a', fontSize: '16px' }}>👮 Conductores Registrados ({conductoresFiltrados.length})</h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0, color: '#0f172a', fontSize: '16px' }}>👮 Lista de Conductores Registrados</h3>
               <input
                 type="text"
                 placeholder="🔍 Buscar conductor..."
@@ -800,48 +781,43 @@ export function App() {
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                 <thead>
-                  <tr style={{ backgroundColor: '#f8fafc', borderBottom: '2px solid #e2e8f0', color: '#475569', fontSize: '12px' }}>
-                    <th style={{ padding: '10px' }}>N°</th>
-                    <th style={{ padding: '10px' }}>CONDUCTOR</th>
-                    <th style={{ padding: '10px' }}>CÉDULA</th>
-                    <th style={{ padding: '10px' }}>TELÉFONO</th>
-                    <th style={{ padding: '10px', textAlign: 'center' }}>ACCIÓN</th>
+                  <tr style={{ backgroundColor: '#f8fafc', borderBottom: '2px solid #e2e8f0', color: '#475569', fontSize: '13px' }}>
+                    <th style={{ padding: '10px' }}>Rango</th>
+                    <th style={{ padding: '10px' }}>Nombres</th>
+                    <th style={{ padding: '10px' }}>Cédula</th>
+                    <th style={{ padding: '10px' }}>Teléfono</th>
+                    <th style={{ padding: '10px', textAlign: 'center' }}>Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
                   {conductoresFiltrados.length > 0 ? (
-                    conductoresFiltrados.map((cond, idx) => (
-                      <tr key={cond.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                        <td style={{ padding: '10px', color: '#94a3b8', fontSize: '12px' }}>{idx + 1}</td>
-                        <td style={{ padding: '10px', fontWeight: 'bold', color: '#1e293b' }}>
-                          <span style={{ color: '#2563eb', fontSize: '12px' }}>[{cond.rango}]</span>
-                          <br />
-                          {cond.nombre}
-                        </td>
-                        <td style={{ padding: '10px', color: '#475569' }}>{cond.cedula}</td>
-                        <td style={{ padding: '10px', color: '#475569' }}>{cond.telefono}</td>
+                    conductoresFiltrados.map((c) => (
+                      <tr key={c.id} style={{ borderBottom: '1px solid #f1f5f9', fontSize: '13px' }}>
+                        <td style={{ padding: '10px', fontWeight: 'bold' }}>{c.rango}</td>
+                        <td style={{ padding: '10px' }}>{c.nombre}</td>
+                        <td style={{ padding: '10px' }}>{c.cedula}</td>
+                        <td style={{ padding: '10px' }}>{c.telefono || 'N/A'}</td>
                         <td style={{ padding: '10px', textAlign: 'center' }}>
                           <button
-                            onClick={() => handleEliminarConductor(cond.id, cond.nombre)}
+                            onClick={() => handleEliminarConductor(c.id, c.nombre)}
                             style={{
                               backgroundColor: '#fee2e2',
                               color: '#dc2626',
                               border: 'none',
-                              padding: '6px 10px',
-                              borderRadius: '6px',
+                              padding: '4px 8px',
+                              borderRadius: '4px',
                               cursor: 'pointer',
                               fontWeight: 'bold',
-                              fontSize: '12px',
                             }}
                           >
-                            🗑️ Eliminar
+                            Eliminar
                           </button>
                         </td>
                       </tr>
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={5} style={{ textAlign: 'center', padding: '24px', color: '#94a3b8' }}>
+                      <td colSpan={5} style={{ textAlign: 'center', padding: '20px', color: '#94a3b8' }}>
                         No hay conductores registrados.
                       </td>
                     </tr>
@@ -854,59 +830,57 @@ export function App() {
         </div>
       )}
 
-      {/* MODAL DE REASIGNACIÓN Y PDF */}
+      {/* MODAL DE REASIGNACIÓN */}
       {itemAReasignar && (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(15, 23, 42, 0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
-          <div style={{ backgroundColor: '#ffffff', padding: '28px', borderRadius: '16px', width: '480px', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ marginTop: 0, color: '#0f172a' }}>🔄 Reasignar Custodio / Conductor</h3>
-            <p style={{ fontSize: '14px', color: '#475569' }}><strong>Unidad:</strong> {itemAReasignar.placa} — {itemAReasignar.marcaModelo}</p>
-            <p style={{ fontSize: '14px', color: '#475569' }}><strong>Custodio Actual:</strong> {itemAReasignar.conductorCustodio}</p>
-
-            <hr style={{ margin: '16px 0', borderColor: '#e2e8f0' }} />
-
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', marginBottom: '6px', fontWeight: 'bold', fontSize: '13px' }}>Seleccionar Conductor:</label>
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+          <div style={{ backgroundColor: '#ffffff', padding: '24px', borderRadius: '12px', width: '400px', maxWidth: '90%' }}>
+            <h3 style={{ marginTop: 0, color: '#0f172a' }}>🔄 Reasignar Unidad ({itemAReasignar.placa})</h3>
+            
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ display: 'block', marginBottom: '4px', fontSize: '13px', fontWeight: 'bold' }}>Nuevo Conductor / Custodio:</label>
               <select
                 value={conductorSeleccionadoId}
                 onChange={(e) => setConductorSeleccionadoId(e.target.value)}
-                style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }}
+                style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
               >
-                <option value="">🟡 DISPONIBLE / SIN CONDUCTOR</option>
+                <option value="">-- DISPONIBLE / SIN CONDUCTOR --</option>
                 {conductores.map((c) => (
                   <option key={c.id} value={c.id}>
-                    🟢 {c.rango} {c.nombre} (CI: {c.cedula})
+                    {c.rango} {c.nombre} ({c.cedula})
                   </option>
                 ))}
               </select>
             </div>
 
             {itemAReasignar.categoria === 'VEHICULO' && (
-              <div style={{ marginBottom: '24px' }}>
-                <label style={{ display: 'block', marginBottom: '6px', fontWeight: 'bold', fontSize: '13px' }}>Circuito Asignado:</label>
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'block', marginBottom: '4px', fontSize: '13px', fontWeight: 'bold' }}>Circuito Asignado:</label>
                 <select
                   value={nuevoCircuitoReasignado}
                   onChange={(e) => setNuevoCircuitoReasignado(e.target.value)}
-                  style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }}
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
                 >
-                  {circuitos.map((c) => (
-                    <option key={c} value={c}>🏢 {c}</option>
+                  {circuitos.map((circ) => (
+                    <option key={circ} value={circ}>
+                      {circ}
+                    </option>
                   ))}
                 </select>
               </div>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
               <button
                 onClick={() => setItemAReasignar(null)}
-                style={{ padding: '10px 18px', borderRadius: '8px', border: '1px solid #cbd5e1', backgroundColor: '#ffffff', cursor: 'pointer', fontWeight: 'bold' }}
+                style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #cbd5e1', backgroundColor: '#fff', cursor: 'pointer' }}
               >
                 Cancelar
               </button>
               <button
                 onClick={handleConfirmarReasignacion}
-                style={{ padding: '10px 18px', borderRadius: '8px', border: 'none', backgroundColor: '#2563eb', color: '#fff', fontWeight: 'bold', cursor: 'pointer' }}
+                style={{ padding: '8px 16px', borderRadius: '6px', border: 'none', backgroundColor: '#2563eb', color: '#fff', fontWeight: 'bold', cursor: 'pointer' }}
               >
-                📄 Confirmar y Generar PDF
+                Confirmar y Generar PDF
               </button>
             </div>
           </div>
@@ -917,4 +891,5 @@ export function App() {
   );
 }
 
+// Exportación por defecto para evitar errores
 export default App;
